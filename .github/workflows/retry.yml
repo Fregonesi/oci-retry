@@ -14,37 +14,12 @@ jobs:
         run: pip install oci
 
       - name: Write key file
+        env:
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
         run: |
-          cat > /tmp/oci_key.pem << 'KEYEOF'
------BEGIN RSA PRIVATE KEY-----
-MIIEogIBAAKCAQEAxOhak/calEQ2eTcZ4jRLT/Wqa6WMFj0LILGbth6NdKK067ru
-0TLPGKlFaMlalKv2BlYad3DEFoG+9eFzpa/tF3Jd5JWBB23DkOAgiFyC1YkjMZ1P
-yTP45gPZvHwZ+6+06awQ6Z/04emixfy5e06QbbKRSgtSEF2SzfWoNUviMmuiC7jI
-FbHFPU2TPMSV/aYsCKgOaIXmlqI9X9SkDFd1awizIXJbDmrlAOjxXRIpIkYO9dde
-4mCeTeyaVnswLZ/qLFGCtGdfZpVCS9lS4LNHVa1zLKKbttK2cZrAc7YdSFyXhZjY
-/7MadsW44BvkH9a+7mFP4+S8Mk2/WpvdFWfAPwIDAQABAoIBAB7jNTTZYeb4yElo
-FlGrKFaI+ncGXJzZwywZZYvs66hBzvrcs5JHU8B86lwPRyaOeaTxeWyxA2FlxYxm
-attbvGedfhMETLLbSf5+Lzw/XsVGTNSp5kEb5k2WibTiYWUKC+lNH3NhBGsyWLaR
-TTswI2xsbWldsJLL9Y0EnaKL88CQEOJu3HEMahv4XM93B3d6NTL0ptScsrNA9iN+
-H87ohl0oXgErtjztPIR2QHexNvO2FxoIaze8OfOBJ0peGKJJRlEY507jAR/gm9oQ
-xVH7ISSAkU/Pm4FGo2e4SCSLtN4lwaVmSgxa+4gkPyyX4t9pfr1KOT60C6oCsDQA
-tRbklukCgYEA+XxMUXZxHKsuYNHobRyinlQ3B6Xeh7MAYBc7nAROce6AMlX+C586
-G2u7tVBxhngln7V/ymqtBJ0q1/JwgUToUOyu/mujgvv1ltYOmYuoGZK2Q4uoyayB
-CPk3T2zFbHK7kftkNktoFfB6IOuCdSfJu+eiaoXp5lo288c7jZzJgpsCgYEAygyY
-aPpjjOlqjjwuYzQHQ4BZtPnU4jK8zGnm1YVsttAk2ZLCffwqRMeu+83EMAa6QiSB
-Yk+wkfPhrA6xd8qlcDvxoNoZ+tdeZFkuQW+HMg3LdGHCnQTLqdefBMQj8fkmAuV5
-BYx/vwMPNPUty7id0iyUtySGHGPL70rwUwAmkS0CgYBOBSgcxayD6aicUKieDrlw
-SCfZdW7NAxaX9kwG83XQvWRL2YaT/dx/HMbb4edOxR4G/wySsZ+f9MKkO8YhNvpr
-7EiheentmXvpCtIQBJOyQ6ZKI0/Kme7UbpN0fDCVRKAR/AsPy68mRUj8KIpotuOo
-prytEWnfRtEulVyzYZfHBwKBgDgFVADPY+i/Ez9KqmXxGA58OOM33fG1talLt6f+
-LY1mmsEEsw5xa1rUrsy8WagjRWNvcbxLch6Vqz2keUpIkqRSyoUZ09g7/L0ACRY1
-kRusvXuQW4BjwwBde4a7x2eg+AwXif2i3gydEYtSa5cvofqTR8ybwN+AQBwiAA5T
-XV4lAoGAWFIvj8G7xP+oF3r1gpBdFgphm/HLLAYwsn1wN1ObrdrT6rj4tkGWV2Kf
-RdA1Z0xM38kHvFXTpK5WN1+dFk1hioqTcGwoahw1BPMYRe9sKQcaExYBwkQwXvWs
-aKeLINhGJViOAs0rVK2N3rCLUEilgBabDLhi8as7+XKfZANa8fM=
------END RSA PRIVATE KEY-----
-KEYEOF
+          echo "$OCI_PRIVATE_KEY" | sed 's/\\n/\n/g' > /tmp/oci_key.pem
           chmod 600 /tmp/oci_key.pem
+          head -1 /tmp/oci_key.pem
 
       - name: Try to create instance
         env:
