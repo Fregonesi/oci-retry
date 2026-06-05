@@ -113,4 +113,7 @@ jobs:
                   else:
                       print(f'  ERRO status={e.status} code={e.code} msg={e.message}', flush=True)
                       time.sleep(30)
+              except Exception as e:
+                  print(f'  Erro de conexao, tentando novamente... {type(e).__name__}', flush=True)
+                  time.sleep(30)
           EOF
