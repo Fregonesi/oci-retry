@@ -23,12 +23,22 @@ jobs:
           OCI_SSH_PUBKEY: ${{ secrets.OCI_SSH_PUBKEY }}
         run: |
           python - <<'EOF'
-          import oci, os, sys, tempfile, time, datetime, base64
+          import oci, os, sys, tempfile, time, datetime
 
-          key_content = base64.b64decode(os.environ['OCI_PRIVATE_KEY']).decode('utf-8')
+          # Reconstruir chave privada com quebras de linha corretas
+          key_content = os.environ['OCI_PRIVATE_KEY'].replace('\\n', '\n')
+
+          # Verificar se a chave tem o formato correto
+          if '-----BEGIN RSA PRIVATE KEY-----' not in key_content:
+              print('ERRO CRITICO: Chave privada mal formatada!')
+              print('Primeiros 100 chars:', repr(key_content[:100]))
+              sys.exit(0)
+
           with tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False) as f:
               f.write(key_content)
               key_path = f.name
+
+          print(f'Chave salva em: {key_path}', flush=True)
 
           config = {
               'user': os.environ['OCI_USER'],
@@ -37,6 +47,8 @@ jobs:
               'region': os.environ['OCI_REGION'],
               'key_file': key_path
           }
+
+          print(f'Config: region={config["region"]}, fingerprint={config["fingerprint"]}', flush=True)
 
           compute = oci.core.ComputeClient(config)
           ssh_key = os.environ['OCI_SSH_PUBKEY'].strip()
