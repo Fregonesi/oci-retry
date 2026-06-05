@@ -17,9 +17,16 @@ jobs:
         env:
           OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
         run: |
-          echo "$OCI_PRIVATE_KEY" | sed 's/\\n/\n/g' > /tmp/oci_key.pem
+          python3 -c "import os; k=os.environ['OCI_PRIVATE_KEY'].replace('\\\\n','\n'); open('/tmp/oci_key.pem','w').write(k)"
           chmod 600 /tmp/oci_key.pem
           head -1 /tmp/oci_key.pem
+
+      - name: Debug - fingerprint da chave no workflow
+        run: |
+          echo "Linhas no arquivo:"
+          wc -l /tmp/oci_key.pem
+          echo "Fingerprint:"
+          openssl rsa -in /tmp/oci_key.pem -pubout -outform DER 2>/dev/null | openssl dgst -md5
 
       - name: Try to create instance
         env:
