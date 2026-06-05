@@ -21,13 +21,6 @@ jobs:
           chmod 600 /tmp/oci_key.pem
           head -1 /tmp/oci_key.pem
 
-      - name: Debug - fingerprint da chave no workflow
-        run: |
-          echo "Linhas no arquivo:"
-          wc -l /tmp/oci_key.pem
-          echo "Fingerprint:"
-          openssl rsa -in /tmp/oci_key.pem -pubout -outform DER 2>/dev/null | openssl dgst -md5
-
       - name: Try to create instance
         env:
           OCI_USER: ${{ secrets.OCI_USER }}
@@ -53,6 +46,22 @@ jobs:
           ssh_key = os.environ['OCI_SSH_PUBKEY'].strip()
           compartment_id = os.environ['OCI_TENANCY']
 
+          # Busca image Ubuntu 22.04 ARM automaticamente
+          print('Buscando image Ubuntu 22.04...', flush=True)
+          images = compute.list_images(
+              compartment_id=compartment_id,
+              operating_system='Canonical Ubuntu',
+              operating_system_version='22.04',
+              shape='VM.Standard.A1.Flex'
+          ).data
+
+          if not images:
+              print('Nenhuma image Ubuntu 22.04 encontrada!')
+              sys.exit(1)
+
+          image_id = images[0].id
+          print(f'Image encontrada: {images[0].display_name} ({image_id})', flush=True)
+
           def instancia_ja_existe():
               try:
                   instances = compute.list_instances(compartment_id=compartment_id).data
@@ -74,8 +83,8 @@ jobs:
               compartment_id=compartment_id,
               shape='VM.Standard.A1.Flex',
               shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(ocpus=4, memory_in_gbs=24),
-              subnet_id='ocid1.subnet.oc1.sa-saopaulo-1.aaaaaaaaw6x6x676dnh7dyypqindcrb56rbqqt7vtxrhyicp32dvwbstwnza',
-              image_id='ocid1.image.oc1.sa-saopaulo-1.aaaaaaaaemf52b7af7ncncxz6pdc6hrlkdmylvwejfzpwnpbuhlfxwhrno6a',
+              subnet_id='ocid1.subnet.oc1.sa-saopaulo-1.aaaaaaaar32rtcz2tde3n67zho6a7ueleiueb2jpz27fympaqvpqgdyemr7a',
+              image_id=image_id,
               metadata={'ssh_authorized_keys': ssh_key},
               display_name='vm-n8n'
           )
@@ -102,6 +111,6 @@ jobs:
                       print(f'  Sem capacidade. Aguardando 30s...', flush=True)
                       time.sleep(30)
                   else:
-                      print(f'  ERRO: {e.message}', flush=True)
+                      print(f'  ERRO status={e.status} code={e.code} msg={e.message}', flush=True)
                       time.sleep(30)
           EOF
