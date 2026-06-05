@@ -13,96 +13,31 @@ jobs:
       - name: Install OCI SDK
         run: pip install oci
 
-      - name: Try to create instance
-        env:
-          OCI_USER: ${{ secrets.OCI_USER }}
-          OCI_TENANCY: ${{ secrets.OCI_TENANCY }}
-          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-          OCI_REGION: ${{ secrets.OCI_REGION }}
-          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
-          OCI_SSH_PUBKEY: ${{ secrets.OCI_SSH_PUBKEY }}
+      - name: Write key file
         run: |
-          python - <<'EOF'
-          import oci, os, sys, tempfile, time, datetime
-
-          # Reconstruir chave privada com quebras de linha corretas
-          key_content = os.environ['OCI_PRIVATE_KEY'].replace('\\n', '\n')
-
-          # Verificar se a chave tem o formato correto
-          if '-----BEGIN RSA PRIVATE KEY-----' not in key_content:
-              print('ERRO CRITICO: Chave privada mal formatada!')
-              print('Primeiros 100 chars:', repr(key_content[:100]))
-              sys.exit(0)
-
-          with tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False) as f:
-              f.write(key_content)
-              key_path = f.name
-
-          print(f'Chave salva em: {key_path}', flush=True)
-
-          config = {
-              'user': os.environ['OCI_USER'],
-              'tenancy': os.environ['OCI_TENANCY'],
-              'fingerprint': os.environ['OCI_FINGERPRINT'],
-              'region': os.environ['OCI_REGION'],
-              'key_file': key_path
-          }
-
-          print(f'Config: region={config["region"]}, fingerprint={config["fingerprint"]}', flush=True)
-
-          compute = oci.core.ComputeClient(config)
-          ssh_key = os.environ['OCI_SSH_PUBKEY'].strip()
-          compartment_id = os.environ['OCI_TENANCY']
-
-          def instancia_ja_existe():
-              try:
-                  instances = compute.list_instances(compartment_id=compartment_id).data
-                  for i in instances:
-                      if i.display_name == 'vm-n8n' and i.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
-                          return True, i.id
-                  return False, None
-              except Exception as e:
-                  print(f'  Erro ao verificar instancias: {e}', flush=True)
-                  return False, None
-
-          existe, ocid = instancia_ja_existe()
-          if existe:
-              print(f'Instancia vm-n8n ja existe! OCID: {ocid}')
-              sys.exit(0)
-
-          details = oci.core.models.LaunchInstanceDetails(
-              availability_domain='oVqo:SA-SAOPAULO-1-AD-1',
-              compartment_id=compartment_id,
-              shape='VM.Standard.A1.Flex',
-              shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(ocpus=4, memory_in_gbs=24),
-              subnet_id='ocid1.subnet.oc1.sa-saopaulo-1.aaaaaaaaw6x6x676dnh7dyypqindcrb56rbqqt7vtxrhyicp32dvwbstwnza',
-              image_id='ocid1.image.oc1.sa-saopaulo-1.aaaaaaaaemf52b7af7ncncxz6pdc6hrlkdmylvwejfzpwnpbuhlfxwhrno6a',
-              metadata={'ssh_authorized_keys': ssh_key},
-              display_name='vm-n8n'
-          )
-
-          tentativa = 0
-          while True:
-              tentativa += 1
-              agora = datetime.datetime.now().strftime('%H:%M:%S')
-              print(f'[{agora}] Tentativa {tentativa}...', flush=True)
-
-              if tentativa % 10 == 0:
-                  existe, ocid = instancia_ja_existe()
-                  if existe:
-                      print(f'Instancia criada por outra execucao! OCID: {ocid}')
-                      sys.exit(0)
-
-              try:
-                  response = compute.launch_instance(details)
-                  print('SUCESSO! Instancia criada!')
-                  print('OCID:', response.data.id)
-                  raise Exception('INSTANCIA CRIADA COM SUCESSO - OCID: ' + response.data.id)
-              except oci.exceptions.ServiceError as e:
-                  if 'Out of host capacity' in str(e):
-                      print(f'  Sem capacidade. Aguardando 30s...', flush=True)
-                      time.sleep(30)
-                  else:
-                      print(f'  ERRO: {e.message}', flush=True)
-                      time.sleep(30)
-          EOF
+          cat > /tmp/oci_key.pem << 'KEYEOF'
+          -----BEGIN RSA PRIVATE KEY-----
+          MIIEogIBAAKCAQEAxOhak/calEQ2eTcZ4jRLT/Wqa6WMFj0LILGbth6NdKK067ru
+          0TLPGKlFaMlalKv2BlYad3DEFoG+9eFzpa/tF3Jd5JWBB23DkOAgiFyC1YkjMZ1P
+          yTP45gPZvHwZ+6+06awQ6Z/04emixfy5e06QbbKRSgtSEF2SzfWoNUviMmuiC7jI
+          FbHFPU2TPMSV/aYsCKgOaIXmlqI9X9SkDFd1awizIXJbDmrlAOjxXRIpIkYO9dde
+          4mCeTeyaVnswLZ/qLFGCtGdfZpVCS9lS4LNHVa1zLKKbttK2cZrAc7YdSFyXhZjY
+          /7MadsW44BvkH9a+7mFP4+S8Mk2/WpvdFWfAPwIDAQABAoIBAB7jNTTZYeb4yElo
+          FlGrKFaI+ncGXJzZwywZZYvs66hBzvrcs5JHU8B86lwPRyaOeaTxeWyxA2FlxYxm
+          attbvGedfhMETLLbSf5+Lzw/XsVGTNSp5kEb5k2WibTiYWUKC+lNH3NhBGsyWLaR
+          TTswI2xsbWldsJLL9Y0EnaKL88CQEOJu3HEMahv4XM93B3d6NTL0ptScsrNA9iN+
+          H87ohl0oXgErtjztPIR2QHexNvO2FxoIaze8OfOBJ0peGKJJRlEY507jAR/gm9oQ
+          xVH7ISSAkU/Pm4FGo2e4SCSLtN4lwaVmSgxa+4gkPyyX4t9pfr1KOT60C6oCsDQA
+          tRbklukCgYEA+XxMUXZxHKsuYNHobRyinlQ3B6Xeh7MAYBc7nAROce6AMlX+C586
+          G2u7tVBxhngln7V/ymqtBJ0q1/JwgUToUOyu/mujgvv1ltYOmYuoGZK2Q4uoyayB
+          CPk3T2zFbHK7kftkNktoFfB6IOuCdSfJu+eiaoXp5lo288c7jZzJgpsCgYEAygyY
+          aPpjjOlqjjwuYzQHQ4BZtPnU4jK8zGnm1YVsttAk2ZLCffwqRMeu+83EMAa6QiSB
+          Yk+wkfPhrA6xd8qlcDvxoNoZ+tdeZFkuQW+HMg3LdGHCnQTLqdefBMQj8fkmAuV5
+          BYx/vwMPNPUty7id0iyUtySGHGPL70rwUwAmkS0CgYBOBSgcxayD6aicUKieDrlw
+          SCfZdW7NAxaX9kwG83XQvWRL2YaT/dx/HMbb4edOxR4G/wySsZ+f9MKkO8YhNvpr
+          7EiheentmXvpCtIQBJOyQ6ZKI0/Kme7UbpN0fDCVRKAR/AsPy68mRUj8KIpotuOo
+          prytEWnfRtEulVyzYZfHBwKBgDgFVADPY+i/Ez9KqmXxGA58OOM33fG1talLt6f+
+          LY1mmsEEsw5xa1rUrsy8WagjRWNvcbxLch6Vqz2keUpIkqRSyoUZ09g7/L0ACRY1
+          kRusvXuQW4BjwwBde4a7x2eg+AwXif2i3gydEYtSa5cvofqTR8ybwN+AQBwiAA5T
+          XV4lAoGAWFIvj8G7xP+oF3r1gpBdFgphm/HLLAYwsn1wN1ObrdrT6rj4tkGWV2Kf
+          RdA1Z0xM38kHvFXTpK5WN1+dFk1hioqTcGwoahw1BPMYRe9sKQc
