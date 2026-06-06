@@ -2,20 +2,13 @@ name: OCI Instance Retry
 
 on:
   schedule:
-    # A cada 30 min -> ~48 runs/dia x ~1 min = ~1440 min/mes (dentro dos 2000 do repo privado).
-    # Se deixar o repo PUBLICO, os minutos de Actions sao ilimitados -> pode usar '*/5 * * * *' a vontade.
-    - cron: '*/30 * * * *'
+    - cron: '0 * * * *'
   workflow_dispatch:
-
-# Evita que duas execucoes rodem ao mesmo tempo (e martelem a API a toa).
-concurrency:
-  group: oci-retry
-  cancel-in-progress: false
 
 jobs:
   try-create:
     runs-on: ubuntu-latest
-    timeout-minutes: 5          # tentativa CURTA -> economiza minutos
+    timeout-minutes: 360
     steps:
       - name: Install OCI SDK
         run: pip install oci
@@ -24,9 +17,7 @@ jobs:
         env:
           OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
         run: |
-          # %b interpreta os \n escapados do secret e gera as quebras de linha REAIS
-          # do PEM. Funciona tanto pra secret em 1 linha (com \n) quanto multilinha.
-          printf '%b' "$OCI_PRIVATE_KEY" > /tmp/oci_key.pem
+          python3 -c "import os; k=os.environ['OCI_PRIVATE_KEY'].replace('\\\\n','\n'); open('/tmp/oci_key.pem','w').write(k)"
           chmod 600 /tmp/oci_key.pem
           head -1 /tmp/oci_key.pem
 
@@ -39,58 +30,53 @@ jobs:
           OCI_SSH_PUBKEY: ${{ secrets.OCI_SSH_PUBKEY }}
         run: |
           python - <<'EOF'
-          import oci, os, sys, datetime
+          import oci, os, sys, time, datetime
+
+          key_path = '/tmp/oci_key.pem'
 
           config = {
               'user': os.environ['OCI_USER'],
               'tenancy': os.environ['OCI_TENANCY'],
               'fingerprint': os.environ['OCI_FINGERPRINT'],
               'region': os.environ['OCI_REGION'],
-              'key_file': '/tmp/oci_key.pem',
+              'key_file': key_path
           }
 
-          # Valida credenciais ANTES de qualquer chamada -> erro de auth aparece claro.
-          try:
-              oci.config.validate_config(config)
-          except Exception as e:
-              print(f'Config invalida: {e}', flush=True)
-              sys.exit(1)
-
           compute = oci.core.ComputeClient(config)
-          compartment_id = os.environ['OCI_TENANCY']
           ssh_key = os.environ['OCI_SSH_PUBKEY'].strip()
-          agora = datetime.datetime.now().strftime('%H:%M:%S')
+          compartment_id = os.environ['OCI_TENANCY']
 
-          # list_images dentro de try/except: se falhar aqui eh auth/permissao, NAO capacidade.
-          try:
-              images = compute.list_images(
-                  compartment_id=compartment_id,
-                  operating_system='Canonical Ubuntu',
-                  operating_system_version='22.04',
-                  shape='VM.Standard.A1.Flex',
-              ).data
-          except oci.exceptions.ServiceError as e:
-              print(f'Falha ao listar images (auth/permissao?): status={e.status} code={e.code} msg={e.message}', flush=True)
-              sys.exit(1)
+          # Busca image Ubuntu 22.04 ARM automaticamente
+          print('Buscando image Ubuntu 22.04...', flush=True)
+          images = compute.list_images(
+              compartment_id=compartment_id,
+              operating_system='Canonical Ubuntu',
+              operating_system_version='22.04',
+              shape='VM.Standard.A1.Flex'
+          ).data
 
           if not images:
-              print('Nenhuma image Ubuntu 22.04 encontrada!', flush=True)
+              print('Nenhuma image Ubuntu 22.04 encontrada!')
               sys.exit(1)
 
           image_id = images[0].id
-          print(f'Image: {images[0].display_name}', flush=True)
+          print(f'Image encontrada: {images[0].display_name} ({image_id})', flush=True)
 
-          # Ja existe a instancia?
-          try:
-              instances = compute.list_instances(compartment_id=compartment_id).data
-          except oci.exceptions.ServiceError as e:
-              print(f'Falha ao listar instancias: status={e.status} code={e.code} msg={e.message}', flush=True)
-              sys.exit(1)
+          def instancia_ja_existe():
+              try:
+                  instances = compute.list_instances(compartment_id=compartment_id).data
+                  for i in instances:
+                      if i.display_name == 'vm-n8n' and i.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
+                          return True, i.id
+                  return False, None
+              except Exception as e:
+                  print(f'  Erro ao verificar instancias: {e}', flush=True)
+                  return False, None
 
-          for i in instances:
-              if i.display_name == 'vm-n8n' and i.lifecycle_state not in ('TERMINATED', 'TERMINATING'):
-                  print(f'Instancia vm-n8n ja existe! OCID: {i.id}', flush=True)
-                  sys.exit(0)
+          existe, ocid = instancia_ja_existe()
+          if existe:
+              print(f'Instancia vm-n8n ja existe! OCID: {ocid}')
+              sys.exit(0)
 
           details = oci.core.models.LaunchInstanceDetails(
               availability_domain='oVqo:SA-SAOPAULO-1-AD-1',
@@ -100,21 +86,34 @@ jobs:
               subnet_id='ocid1.subnet.oc1.sa-saopaulo-1.aaaaaaaar32rtcz2tde3n67zho6a7ueleiueb2jpz27fympaqvpqgdyemr7a',
               image_id=image_id,
               metadata={'ssh_authorized_keys': ssh_key},
-              display_name='vm-n8n',
+              display_name='vm-n8n'
           )
 
-          # UMA tentativa por execucao -> sai rapido, gasta pouco minuto.
-          try:
-              resp = compute.launch_instance(details)
-              print(f'[{agora}] SUCESSO! Instancia criada. OCID: {resp.data.id}', flush=True)
-              sys.exit(0)   # <- sai de verdade (sem o bug do raise sendo capturado)
-          except oci.exceptions.ServiceError as e:
-              msg = str(e)
-              if 'Out of host capacity' in msg or e.status in (429, 500):
-                  # Esperado: capacidade indisponivel. Sai LIMPO (run verde) e tenta no proximo ciclo.
-                  print(f'[{agora}] Sem capacidade ainda (status={e.status} code={e.code}). Tento no proximo ciclo.', flush=True)
-                  sys.exit(0)
-              # Erro de verdade (config, permissao, subnet errada, etc.) -> falha VERMELHA pra voce ver.
-              print(f'[{agora}] ERRO real: status={e.status} code={e.code} msg={e.message}', flush=True)
-              sys.exit(1)
+          tentativa = 0
+          while True:
+              tentativa += 1
+              agora = datetime.datetime.now().strftime('%H:%M:%S')
+              print(f'[{agora}] Tentativa {tentativa}...', flush=True)
+
+              if tentativa % 10 == 0:
+                  existe, ocid = instancia_ja_existe()
+                  if existe:
+                      print(f'Instancia criada por outra execucao! OCID: {ocid}')
+                      sys.exit(0)
+
+              try:
+                  response = compute.launch_instance(details)
+                  print('SUCESSO! Instancia criada!')
+                  print('OCID:', response.data.id)
+                  raise Exception('INSTANCIA CRIADA COM SUCESSO - OCID: ' + response.data.id)
+              except oci.exceptions.ServiceError as e:
+                  if 'Out of host capacity' in str(e):
+                      print(f'  Sem capacidade. Aguardando 30s...', flush=True)
+                      time.sleep(30)
+                  else:
+                      print(f'  ERRO status={e.status} code={e.code} msg={e.message}', flush=True)
+                      time.sleep(30)
+              except Exception as e:
+                  print(f'  Erro de conexao, tentando novamente... {type(e).__name__}', flush=True)
+                  time.sleep(30)
           EOF
