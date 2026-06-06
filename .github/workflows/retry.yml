@@ -5,6 +5,12 @@ on:
     - cron: '0 * * * *'
   workflow_dispatch:
 
+# Impede que duas execucoes rodem ao mesmo tempo e tentem criar a VM em paralelo
+# (evita instancia duplicada quando a capacidade liberar).
+concurrency:
+  group: oci-retry
+  cancel-in-progress: false
+
 jobs:
   try-create:
     runs-on: ubuntu-latest
@@ -103,12 +109,24 @@ jobs:
 
               try:
                   response = compute.launch_instance(details)
-                  print('SUCESSO! Instancia criada!')
-                  print('OCID:', response.data.id)
-                  raise Exception('INSTANCIA CRIADA COM SUCESSO - OCID: ' + response.data.id)
+                  # CRIOU DE VERDADE -> imprime o OCID e SAI. sys.exit(0) lanca SystemExit,
+                  # que NAO eh capturado pelo 'except Exception' abaixo (SystemExit herda de
+                  # BaseException, nao de Exception). Por isso ele sai limpo, sem reentrar no loop.
+                  print('SUCESSO! Instancia criada!', flush=True)
+                  print('OCID:', response.data.id, flush=True)
+                  sys.exit(0)
               except oci.exceptions.ServiceError as e:
-                  if 'Out of host capacity' in str(e):
+                  msg = str(e)
+                  if 'Out of host capacity' in msg or e.status in (429, 500):
                       print(f'  Sem capacidade. Aguardando 30s...', flush=True)
+                      time.sleep(30)
+                  elif e.code in ('LimitExceeded', 'QuotaExceeded') or 'already exists' in msg.lower():
+                      # Provavelmente JA criou (ou bateu no limite do free tier). Confere e sai.
+                      existe, ocid = instancia_ja_existe()
+                      if existe:
+                          print(f'Instancia ja existe! OCID: {ocid}', flush=True)
+                          sys.exit(0)
+                      print(f'  ERRO de limite/quota: status={e.status} code={e.code} msg={e.message}', flush=True)
                       time.sleep(30)
                   else:
                       print(f'  ERRO status={e.status} code={e.code} msg={e.message}', flush=True)
