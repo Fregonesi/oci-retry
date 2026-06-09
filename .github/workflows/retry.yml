@@ -5,8 +5,6 @@ on:
     - cron: '0 * * * *'
   workflow_dispatch:
 
-# Impede que duas execucoes rodem ao mesmo tempo e tentem criar a VM em paralelo
-# (evita instancia duplicada quando a capacidade liberar).
 concurrency:
   group: oci-retry
   cancel-in-progress: false
@@ -17,7 +15,7 @@ jobs:
     timeout-minutes: 360
     steps:
       - name: Install OCI SDK
-        run: pip install oci
+        run: pip install oci==2.177.0
 
       - name: Write key file
         env:
@@ -34,9 +32,11 @@ jobs:
           OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
           OCI_REGION: ${{ secrets.OCI_REGION }}
           OCI_SSH_PUBKEY: ${{ secrets.OCI_SSH_PUBKEY }}
+          NOTIFY_WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK }}
         run: |
           python - <<'EOF'
           import oci, os, sys, time, datetime
+          import urllib.request, json
 
           key_path = '/tmp/oci_key.pem'
 
@@ -48,11 +48,27 @@ jobs:
               'key_file': key_path
           }
 
+          # --- Notificacao opcional (Discord webhook) ---
+          # Se o secret NOTIFY_WEBHOOK nao existir, simplesmente nao notifica.
+          # Uma falha ao notificar NUNCA derruba o script.
+          def notify(text):
+              url = os.environ.get('NOTIFY_WEBHOOK', '').strip()
+              if not url:
+                  return
+              try:
+                  data = json.dumps({'content': text}).encode('utf-8')
+                  req = urllib.request.Request(
+                      url, data=data, headers={'Content-Type': 'application/json'}
+                  )
+                  urllib.request.urlopen(req, timeout=10)
+                  print('  (notificacao enviada)', flush=True)
+              except Exception as ne:
+                  print(f'  (falha ao notificar: {type(ne).__name__})', flush=True)
+
           compute = oci.core.ComputeClient(config)
           ssh_key = os.environ['OCI_SSH_PUBKEY'].strip()
           compartment_id = os.environ['OCI_TENANCY']
 
-          # Busca image Ubuntu 22.04 ARM automaticamente
           print('Buscando image Ubuntu 22.04...', flush=True)
           images = compute.list_images(
               compartment_id=compartment_id,
@@ -63,6 +79,7 @@ jobs:
 
           if not images:
               print('Nenhuma image Ubuntu 22.04 encontrada!')
+              notify('ERRO oci-retry: nenhuma image Ubuntu 22.04 encontrada (config errada?)')
               sys.exit(1)
 
           image_id = images[0].id
@@ -82,6 +99,7 @@ jobs:
           existe, ocid = instancia_ja_existe()
           if existe:
               print(f'Instancia vm-n8n ja existe! OCID: {ocid}')
+              notify(f'VM vm-n8n JA EXISTE. OCID: {ocid} -- pode DESATIVAR o workflow.')
               sys.exit(0)
 
           details = oci.core.models.LaunchInstanceDetails(
@@ -105,33 +123,59 @@ jobs:
                   existe, ocid = instancia_ja_existe()
                   if existe:
                       print(f'Instancia criada por outra execucao! OCID: {ocid}')
+                      notify(f'VM vm-n8n criada (detectada na verificacao periodica). OCID: {ocid} -- DESATIVE o workflow.')
                       sys.exit(0)
 
               try:
                   response = compute.launch_instance(details)
-                  # CRIOU DE VERDADE -> imprime o OCID e SAI. sys.exit(0) lanca SystemExit,
-                  # que NAO eh capturado pelo 'except Exception' abaixo (SystemExit herda de
-                  # BaseException, nao de Exception). Por isso ele sai limpo, sem reentrar no loop.
+                  ocid = response.data.id
                   print('SUCESSO! Instancia criada!', flush=True)
-                  print('OCID:', response.data.id, flush=True)
+                  print('OCID:', ocid, flush=True)
+                  notify(f'SUCESSO! VM vm-n8n criada! OCID: {ocid} -- pegue o IP no painel da Oracle e DESATIVE o workflow.')
                   sys.exit(0)
+
               except oci.exceptions.ServiceError as e:
                   msg = str(e)
+
+                  # 1) SEM CAPACIDADE: erro esperado/normal -> continua tentando pra sempre.
                   if 'Out of host capacity' in msg or e.status in (429, 500):
-                      print(f'  Sem capacidade. Aguardando 30s...', flush=True)
+                      print('  Sem capacidade. Aguardando 30s...', flush=True)
                       time.sleep(30)
+
+                  # 2) LIMITE/QUOTA ou JA EXISTE: confirma se a VM ja foi criada.
                   elif e.code in ('LimitExceeded', 'QuotaExceeded') or 'already exists' in msg.lower():
-                      # Provavelmente JA criou (ou bateu no limite do free tier). Confere e sai.
                       existe, ocid = instancia_ja_existe()
                       if existe:
                           print(f'Instancia ja existe! OCID: {ocid}', flush=True)
+                          notify(f'VM vm-n8n ja existe! OCID: {ocid} -- DESATIVE o workflow.')
                           sys.exit(0)
                       print(f'  ERRO de limite/quota: status={e.status} code={e.code} msg={e.message}', flush=True)
                       time.sleep(30)
+
+                  # 3) ERRO FATAL (credencial/config): repetir nao adianta -> PARA e AVISA.
+                  #    Ex: 401 auth, 403 sem permissao, 400 request invalido, 404 recurso inexistente.
+                  elif e.status in (400, 401, 403, 404):
+                      existe, ocid = instancia_ja_existe()
+                      if existe:
+                          notify(f'VM vm-n8n ja existe! OCID: {ocid} -- DESATIVE o workflow.')
+                          sys.exit(0)
+                      print(f'  ERRO FATAL status={e.status} code={e.code} msg={e.message}', flush=True)
+                      notify(f'ERRO FATAL no oci-retry: status={e.status} code={e.code} msg={e.message} -- precisa de atencao manual.')
+                      sys.exit(1)
+
+                  # 4) Qualquer outro ServiceError: trata como transitorio e continua.
                   else:
                       print(f'  ERRO status={e.status} code={e.code} msg={e.message}', flush=True)
                       time.sleep(30)
+
               except Exception as e:
-                  print(f'  Erro de conexao, tentando novamente... {type(e).__name__}', flush=True)
+                  # Soluco de rede. Pode ser que a VM tenha sido criada mas a resposta caiu:
+                  # confirma a existencia ANTES de tentar de novo (fecha a janela de duplicata).
+                  print(f'  Erro de conexao, verificando se criou... {type(e).__name__}', flush=True)
+                  existe, ocid = instancia_ja_existe()
+                  if existe:
+                      print(f'Instancia detectada apos erro de conexao! OCID: {ocid}', flush=True)
+                      notify(f'VM vm-n8n criada (detectada apos erro de conexao). OCID: {ocid} -- DESATIVE o workflow.')
+                      sys.exit(0)
                   time.sleep(30)
           EOF
